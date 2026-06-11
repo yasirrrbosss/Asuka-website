@@ -1,0 +1,83 @@
+@import "tailwindcss";
+
+:root {
+  /* Asuka — Warm Honey palette (Fraunces + Inter, atmospheric direction) */
+  --bone: #f0ebe0;        /* main light page surface */
+  --cream: #fbf7ed;       /* brighter cream for text on dark photos/surfaces */
+  --paper: #ebe3cc;       /* card / divider tone on bone */
+  --paper-edge: #d8d0bd;  /* subtle borders */
+  --ink: #0e0905;         /* deep ink for buttons, footers, gradient bottoms */
+  --ink-soft: #36281d;    /* mid sepia for body text on light */
+  --gold: #e8b870;        /* honey gold — primary accent on dark */
+  --gold-deep: #c89954;   /* darker honey for hover/pressed states */
+  --moss: #3d5a3e;        /* secondary accent */
+  --copper: #a05d3a;      /* overlines / accents on light surfaces */
+  --terracotta: #c45c3e;  /* errors, cart count */
+  --muted: #777777;       /* secondary text */
+
+  /* Vertical rhythm — scales down on smaller viewports */
+  --section-gap: clamp(72px, 11vw, 140px);
+  --section-gap-tight: clamp(56px, 8vw, 100px);
+
+  /* Motion */
+  --ease-out-soft: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-reveal: 0.7s var(--ease-out-soft);
+  --motion-fast: 0.2s ease;
+}
+
+@theme inline {
+  --color-bone: var(--bone);
+  --color-cream: var(--cream);
+  --color-ink: var(--ink);
+  --color-gold: var(--gold);
+  --color-moss: var(--moss);
+  --color-copper: var(--copper);
+  --color-paper: var(--paper);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  background: var(--bone);
+  color: var(--ink);
+  font-family: var(--font-inter, "Inter", system-ui, sans-serif);
+  font-feature-settings: "ss01", "cv11";
+  line-height: 1.55;
+}
+
+::selection { background: var(--gold); color: var(--ink); }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--gold); outline-offset: 1px; }
+a { color: inherit; text-decoration: none; }
+
+/* Fraunces variation-axis helpers.
+ * .ff-display       — regular headline render (default opsz + soft 30)
+ * .ff-display em,i  — italic accent with wonky alt glyphs for character
+ * Apply on any heading and italics inside it inherit the wonky settings. */
+.ff-display {
+  font-family: var(--font-fraunces, "Fraunces", serif);
+  font-optical-sizing: auto;
+  font-variation-settings: "SOFT" 30, "WONK" 0;
+}
+.ff-display em, .ff-display i {
+  font-variation-settings: "SOFT" 60, "WONK" 1;
+}
+
+/* Reveal-on-scroll utility */
+.reveal { opacity: 0; transform: translateY(28px); transition: opacity var(--motion-reveal), transform var(--motion-reveal); }
+.reveal.in { opacity: 1; transform: translateY(0); }
+
+/* Keyframes */
+@keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes scaleIn { from { transform: scale(0.96); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+@keyframes slideIn { from { transform: translateX(40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+@keyframes stampSpin { from { transform: translate(-50%, -50%) rotate(0); } to { transform: translate(-50%, -50%) rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
