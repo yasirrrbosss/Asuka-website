@@ -120,7 +120,26 @@ export default function AdminDashboard() {
   const [dragOver,setDragOver]=useState(false);
   const [imgUploading,setImgUploading]=useState(false);
   const [imgErr,setImgErr]=useState("");
+  const [flash,setFlash]=useState<string|null>(null);
   const fileInputRef=useRef<HTMLInputElement|null>(null);
+
+  const showFlash=(m:string)=>{setFlash(m);window.setTimeout(()=>setFlash(null),3500);};
+
+  const getToken=()=>{try{return window.sessionStorage?.getItem("asuka_admin_token")??"";}catch{return "";}};
+
+  // Authenticated JSON call to an admin API route. On 401 (expired/invalid
+  // session) it logs the admin out so they re-authenticate. Returns null on any
+  // failure (after surfacing a message) so callers can bail cleanly.
+  const adminApi=async(url:string,method:string,body?:unknown):Promise<any|null>=>{
+    let res:Response;
+    try{
+      res=await fetch(url,{method,headers:{"Content-Type":"application/json",Authorization:`Bearer ${getToken()}`},body:body===undefined?undefined:JSON.stringify(body)});
+    }catch{showFlash("Tidak bisa terhubung ke server.");return null;}
+    if(res.status===401){setLoggedIn(false);try{window.sessionStorage?.removeItem("asuka_admin_token");}catch{}showFlash("Sesi berakhir. Silakan login lagi.");return null;}
+    let data:any=null;try{data=await res.json();}catch{}
+    if(!res.ok){showFlash(data?.error||"Operasi gagal.");return null;}
+    return data??{};
+  };
 
   const handleImageFile=async(file:File|null|undefined)=>{
     setImgErr("");
@@ -133,7 +152,7 @@ export default function AdminDashboard() {
     finally{setImgUploading(false);}
   };
 
-  const fetchOrders=async()=>{setRefreshing(true);try{await initFB();const s=await db.collection("orders").orderBy("createdAt","desc").get();setOrders(s.docs.map((d:any)=>({id:d.id,...d.data()}as Order)));}catch(e){console.error(e);}finally{setRefreshing(false);}};
+  const fetchOrders=async()=>{setRefreshing(true);try{const data=await adminApi("/api/admin/orders","GET");if(data?.orders)setOrders(data.orders as Order[]);}finally{setRefreshing(false);}};
   const fetchProds=async()=>{setPLoading(true);try{await initFB();const s=await db.collection("products").orderBy("createdAt","desc").get();setProds(s.docs.map((d:any)=>({id:d.id,...d.data()}as Prod)));}catch(e){console.error(e);}finally{setPLoading(false);}};
 
   useEffect(() => {
@@ -168,7 +187,15 @@ export default function AdminDashboard() {
   // Legacy single-toggle kept only as defensive fallback; actions below replace it.
   // (Removed call-sites use markShipped/undoShipped/cancelOrder instead.)
 
-  const downloadCSV=()=>{const l=filteredOrders;const h=["Order ID","Tanggal","Nama","WA","Alamat","Items","Pengiriman","Ongkir","Total","Status","Tgl Kirim"];const rows=l.map(o=>[o.id,fmtD(o.createdAt),`"${(o.customer?.name??"").replace(/"/g,'""')}"`,o.customer?.contact??"",`"${(o.customer?.address??"").replace(/"/g,'""')}"`,`"${(o.items??[]).map(i=>`${i.name} x${i.qty}`).join("; ")}"`,o.shipment?.label??"",o.shipment?.price??0,o.total??0,o.status??"pending",o.shippedAt?fmtD(o.shippedAt):""]);const csv=[h.join(","),...rows.map(r=>r.join(","))].join("\n");const b=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`asuka-orders-${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(u);};
+  // Guard against CSV/formula injection: a field starting with = + - @ (or a
+  // control char) can execute as a formula when the file is opened in Excel/
+  // Sheets. Prefix those with a single quote, then quote/escape for CSV.
+  const csvCell=(v:string|number):string=>{
+    let s=String(v??"");
+    if(/^[=+\-@\t\r]/.test(s))s="'"+s;
+    return `"${s.replace(/"/g,'""')}"`;
+  };
+  const downloadCSV=()=>{const l=filteredOrders;const h=["Order ID","Tanggal","Nama","WA","Alamat","Items","Pengiriman","Ongkir","Total","Status","Tgl Kirim"];const rows=l.map(o=>[o.id,fmtD(o.createdAt),o.customer?.name??"",o.customer?.contact??"",o.customer?.address??"",(o.items??[]).map(i=>`${i.name} x${i.qty}`).join("; "),o.shipment?.label??"",o.shipment?.price??0,o.total??0,o.status??"pending",o.shippedAt?fmtD(o.shippedAt):""].map(csvCell));const csv=[h.map(csvCell).join(","),...rows.map(r=>r.join(","))].join("\n");const b=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`asuka-orders-${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(u);};
 
   const needsVerify=(o:Order):boolean=>!!o.paymentProof&&!o.paymentVerified&&o.status!=="cancelled";
 
@@ -256,74 +283,75 @@ export default function AdminDashboard() {
     if(!pForm.name||!pForm.weight||!pForm.price)return;
     setPSaving(true);
     try{
-      await initFB();
       const data:Record<string,unknown>={name:pForm.name,weight:pForm.weight,price:Number(pForm.price),origin:pForm.origin,process:pForm.process,notes:pForm.notes,cat:pForm.cat,img:pForm.img,available:pForm.available};
       // Only persist stock when admin actually typed a number (stays "untracked" otherwise).
       if(pForm.stock!==undefined&&pForm.stock!==null&&!Number.isNaN(pForm.stock))data.stock=Number(pForm.stock);
       if(editP?.id){
-        await db.collection("products").doc(editP.id).update(data);
+        const r=await adminApi("/api/admin/products","PATCH",{id:editP.id,data});
+        if(!r)return;
         setProds(p=>p.map(pr=>pr.id===editP.id?{...pr,...data}as Prod:pr));
       }else{
-        const ref=await db.collection("products").add({...data,createdAt:new Date().toISOString()});
-        setProds(p=>[{id:ref.id,...data,createdAt:new Date().toISOString()}as Prod,...p]);
+        const r=await adminApi("/api/admin/products","POST",data);
+        if(!r)return;
+        setProds(p=>[{id:r.id,...data,createdAt:new Date().toISOString()}as Prod,...p]);
       }
       closeForm();
-    }catch(e){console.error(e);}finally{setPSaving(false);}
+    }finally{setPSaving(false);}
   };
 
-  // ── ORDER ACTIONS ──
+  // ── ORDER ACTIONS ── (all writes go through the auth-gated admin API)
   const verifyPayment=async(id:string)=>{
     setUpdating(id);
     try{
-      await initFB();
       const now=new Date().toISOString();
-      await db.collection("orders").doc(id).update({paymentVerified:true,paymentVerifiedAt:now});
+      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"verify"});
+      if(!r)return;
       setOrders(p=>p.map(o=>o.id===id?{...o,paymentVerified:true,paymentVerifiedAt:now}:o));
-    }catch(e){console.error(e);}finally{setUpdating(null);}
+    }finally{setUpdating(null);}
   };
 
   const markShipped=async(id:string,courier:string,resi:string)=>{
     if(!courier.trim()||!resi.trim())return;
     setUpdating(id);
     try{
-      await initFB();
       const now=new Date().toISOString();
-      await db.collection("orders").doc(id).update({status:"shipped",shippedAt:now,trackingCourier:courier.trim(),trackingNumber:resi.trim()});
+      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"ship",courier:courier.trim(),resi:resi.trim()});
+      if(!r)return;
       setOrders(p=>p.map(o=>o.id===id?{...o,status:"shipped",shippedAt:now,trackingCourier:courier.trim(),trackingNumber:resi.trim()}:o));
-    }catch(e){console.error(e);}finally{setUpdating(null);}
+    }finally{setUpdating(null);}
   };
 
   const undoShipped=async(id:string)=>{
     setUpdating(id);
     try{
-      await initFB();
-      await db.collection("orders").doc(id).update({status:"pending",shippedAt:null});
+      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"undo"});
+      if(!r)return;
       setOrders(p=>p.map(o=>o.id===id?{...o,status:"pending",shippedAt:null}:o));
-    }catch(e){console.error(e);}finally{setUpdating(null);}
+    }finally{setUpdating(null);}
   };
 
   const cancelOrder=async(id:string,reason:string)=>{
     if(!reason.trim())return;
     setUpdating(id);
     try{
-      await initFB();
       const now=new Date().toISOString();
-      await db.collection("orders").doc(id).update({status:"cancelled",cancelledAt:now,cancelReason:reason.trim()});
+      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"cancel",reason:reason.trim()});
+      if(!r)return;
       setOrders(p=>p.map(o=>o.id===id?{...o,status:"cancelled",cancelledAt:now,cancelReason:reason.trim()}:o));
-    }catch(e){console.error(e);}finally{setUpdating(null);}
+    }finally{setUpdating(null);}
   };
 
   const saveNotes=async(id:string,notes:string)=>{
     setUpdating(id);
     try{
-      await initFB();
-      await db.collection("orders").doc(id).update({internalNotes:notes});
+      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"notes",notes});
+      if(!r)return;
       setOrders(p=>p.map(o=>o.id===id?{...o,internalNotes:notes}:o));
-    }catch(e){console.error(e);}finally{setUpdating(null);}
+    }finally{setUpdating(null);}
   };
 
-  const toggleAvail=async(id:string,cur:boolean)=>{try{await initFB();await db.collection("products").doc(id).update({available:!cur});setProds(p=>p.map(pr=>pr.id===id?{...pr,available:!cur}:pr));}catch(e){console.error(e);}};
-  const deleteProd=async(id:string)=>{try{await initFB();await db.collection("products").doc(id).delete();setProds(p=>p.filter(pr=>pr.id!==id));setDelConfirm(null);}catch(e){console.error(e);}};
+  const toggleAvail=async(id:string,cur:boolean)=>{const r=await adminApi("/api/admin/products","PATCH",{id,data:{available:!cur}});if(!r)return;setProds(p=>p.map(pr=>pr.id===id?{...pr,available:!cur}:pr));};
+  const deleteProd=async(id:string)=>{const r=await adminApi("/api/admin/products","DELETE",{id});if(!r)return;setProds(p=>p.filter(pr=>pr.id!==id));setDelConfirm(null);};
 
   const inp:CSSProperties={width:"100%",padding:"11px 14px",borderRadius:10,border:"1.5px solid #262626",fontSize:14,background:"#1a1a1a",color:"#e8e4df",fontFamily:"'DM Sans',sans-serif"};
   const lab:CSSProperties={fontSize:11,fontWeight:600,color:"#666",marginBottom:5,display:"block",letterSpacing:.3};
@@ -348,6 +376,7 @@ export default function AdminDashboard() {
       )}
 
       {loggedIn&&(<>
+        {flash&&(<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:300,background:"#2a1a1a",border:"1px solid rgba(232,93,74,.4)",color:"#e8a89a",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:600,boxShadow:"0 8px 30px rgba(0,0,0,.4)"}}>{flash}</div>)}
         <header style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 24px",borderBottom:"1px solid #1a1a1a",background:"#111",position:"sticky",top:0,zIndex:50}}>
           <div style={{display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:18}}>☕</span><span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:600,color:"#e8e4df",letterSpacing:1}}>ASUKA ADMIN</span></div>
           <div style={{display:"flex",alignItems:"center",gap:12}}><span style={{fontSize:12,color:"#555"}}>{username}</span><button onClick={handleLogout} style={{background:"none",border:"1px solid #2a2a2a",color:"#777",padding:"5px 14px",borderRadius:6,fontSize:11,cursor:"pointer",fontWeight:500}}>Logout</button></div>

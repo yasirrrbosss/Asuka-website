@@ -53,7 +53,7 @@ export function CartPage({ cart, updateQty, removeFromCart, cartSubtotal, go }: 
       <p style={{
         fontSize: 11, letterSpacing: "0.28em", textTransform: "uppercase",
         color: "var(--copper)", fontWeight: 700, marginBottom: 48,
-      }}>{cart.length} {cart.length === 1 ? "item" : "items"}</p>
+      }}>Step 1 of 3 · {cart.length} {cart.length === 1 ? "item" : "items"}</p>
       {cart.map((it) => (
         <div key={it.id} className="cart-row" style={{
           padding: "20px 0", borderBottom: "1px solid var(--paper-edge)",

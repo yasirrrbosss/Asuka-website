@@ -34,9 +34,17 @@ export function ProductCard({ product, addToCart, delay }: { product: Product; a
   return (
     <div
       ref={ref}
+      role="button"
+      tabIndex={soldOut ? -1 : 0}
+      aria-label={soldOut ? `${product.name} — sold out` : `Add ${product.name} to cart — ${rp(product.price)}`}
+      aria-disabled={soldOut}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onClick={handleAdd}
+      onKeyDown={(e) => {
+        if (soldOut) return;
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); handleAdd(); }
+      }}
       style={{
         cursor: soldOut ? "not-allowed" : "pointer",
         opacity: visible ? (soldOut ? 0.55 : 1) : 0,

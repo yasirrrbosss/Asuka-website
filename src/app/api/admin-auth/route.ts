@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "node:crypto";
 import { createRateLimiter } from "@/lib/rateLimit";
 import { signToken } from "@/lib/auth";
 
@@ -8,6 +9,15 @@ function getIp(req: NextRequest): string {
   const fwd = req.headers.get("x-forwarded-for");
   if (fwd) return fwd.split(",")[0].trim();
   return req.headers.get("x-real-ip") ?? "unknown";
+}
+
+// Length-independent constant-time string compare: hashing both sides first
+// means the comparison never short-circuits on length or first-differing byte,
+// so it can't be used as a timing oracle for the username or password.
+function safeEqual(a: string, b: string): boolean {
+  const ha = crypto.createHash("sha256").update(a).digest();
+  const hb = crypto.createHash("sha256").update(b).digest();
+  return crypto.timingSafeEqual(ha, hb);
 }
 
 export async function POST(req: NextRequest) {
@@ -39,7 +49,11 @@ export async function POST(req: NextRequest) {
   }
   const { username, password } = body;
 
-  if (username === ADMIN_USER && password === ADMIN_PASS) {
+  // Evaluate both checks without short-circuiting so a wrong username and a
+  // wrong password are indistinguishable by timing.
+  const userOk = safeEqual(String(username ?? ""), ADMIN_USER);
+  const passOk = safeEqual(String(password ?? ""), ADMIN_PASS);
+  if (userOk && passOk) {
     const token = signToken({ user: ADMIN_USER, iat: Math.floor(Date.now() / 1000) }, TOKEN_SECRET);
     return NextResponse.json({ success: true, token });
   }

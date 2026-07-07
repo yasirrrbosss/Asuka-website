@@ -42,24 +42,8 @@ export const initFB = (): Promise<void> =>
       });
   });
 
-export const pushOrder = async (d: Record<string, any>): Promise<string> => {
-  await initFB();
-  const ref = await _db.collection("orders").add(d);
-  return ref.id as string;
-};
-
-/**
- * Atomically decrement a product's stock field by `qty` (Firestore server-side increment).
- * If the product has no `stock` field set, this creates one — which is fine because
- * admin can still toggle `available` for products with stock tracking off.
- */
-export const decrementProductStock = async (productId: string, qty: number): Promise<void> => {
-  await initFB();
-  const fv = window.firebase.firestore.FieldValue;
-  await _db.collection("products").doc(productId).update({
-    stock: fv.increment(-qty),
-  });
-};
+// Order creation and stock decrement now happen server-side via /api/order
+// (Firebase Admin SDK), so the client no longer writes to Firestore directly.
 
 export const fetchProductsFromDB = async (): Promise<any[]> => {
   await initFB();
@@ -67,9 +51,6 @@ export const fetchProductsFromDB = async (): Promise<any[]> => {
   return snap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
 };
 
-export const fetchOrder = async (id: string): Promise<any | null> => {
-  await initFB();
-  const doc = await _db.collection("orders").doc(id).get();
-  if (!doc.exists) return null;
-  return { id: doc.id, ...doc.data() };
-};
+// Customer order tracking goes through /api/track/[id], which strips PII and
+// internal fields. Reading the raw order doc client-side is intentionally not
+// exposed here to avoid leaking customer data into the browser.

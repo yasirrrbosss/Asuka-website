@@ -1,22 +1,21 @@
 "use client";
 import { useState, useEffect, useCallback } from "react";
 import { rp } from "@/lib/format";
-import { fetchOrder } from "@/lib/firebase";
 import { Sec, BackBtn } from "./shared";
 import { Timeline } from "./Timeline";
 
+// Shape returned by /api/track/[id] — deliberately excludes customer PII,
+// the payment-proof image, and internal notes.
 interface Order {
   id: string;
   status?: string;                  // "pending" | "shipped" | "cancelled"
-  createdAt?: string;
+  createdAt?: string | null;
   shippedAt?: string | null;
-  paymentProof?: string | null;
-  paymentVerified?: boolean;
-  paymentVerifiedAt?: string;
-  trackingCourier?: string;
-  trackingNumber?: string;
-  cancelledAt?: string;
-  cancelReason?: string;
+  hasProof?: boolean;
+  paymentVerified?: boolean | null; // null = legacy order
+  trackingCourier?: string | null;
+  trackingNumber?: string | null;
+  cancelReason?: string | null;
   total?: number;
   items?: Array<{ name: string; qty: number; price: number; subtotal?: number }>;
   shipment?: { label?: string; price?: number } | null;
@@ -33,9 +32,14 @@ export function TrackPage({ go, initialOid }: { go: (p: string) => void; initial
     if (!trackId.trim()) return;
     setSearching(true); setError(""); setOrder(null); setSearched(false);
     try {
-      const found = await fetchOrder(trackId.trim()) as Order | null;
-      if (found) setOrder(found);
-      else setError("Order not found. Double-check your Order ID.");
+      const res = await fetch(`/api/track/${encodeURIComponent(trackId.trim())}`);
+      if (res.ok) {
+        setOrder((await res.json()) as Order);
+      } else if (res.status === 404) {
+        setError("Order not found. Double-check your Order ID.");
+      } else {
+        setError("Couldn't reach the server. Please try again.");
+      }
       setSearched(true);
     } catch (e) {
       console.error(e);
@@ -55,7 +59,8 @@ export function TrackPage({ go, initialOid }: { go: (p: string) => void; initial
   // that customer uploaded a proof. Fallback to paymentProof-based logic for
   // legacy orders created before the verification flow shipped.
   const isCancelled = order?.status === "cancelled";
-  const isPaid = order?.paymentVerified === true || (order?.paymentVerified === undefined && order?.paymentProof != null);
+  // Legacy orders (paymentVerified null) fall back to "proof uploaded = paid".
+  const isPaid = order?.paymentVerified === true || (order?.paymentVerified == null && order?.hasProof === true);
   const isShipped = order?.status === "shipped";
   const steps = order && !isCancelled ? [
     { label: "Placed", reached: true, current: !isPaid && !isShipped },
@@ -70,7 +75,7 @@ export function TrackPage({ go, initialOid }: { go: (p: string) => void; initial
         ? (order.trackingNumber ? "On its way — use the tracking number to follow your shipment on the courier's site." : "Shipped. We'll keep you posted on WhatsApp.")
         : isPaid
           ? "Roasting now. We'll WhatsApp when it ships."
-          : order.paymentProof
+          : order.hasProof
             ? "Payment proof received. Awaiting admin verification."
             : "Waiting for your payment."
     : "";

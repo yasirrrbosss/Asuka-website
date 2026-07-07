@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { pushOrder, fetchProductsFromDB, decrementProductStock } from "@/lib/firebase";
+import { fetchProductsFromDB } from "@/lib/firebase";
 import { compressImageForUpload } from "@/lib/format";
 import { SHIP_OPTIONS, WHATSAPP_NUMBER } from "@/lib/constants";
 import type { Product, CartItem, CustomerForm } from "@/lib/types";
@@ -105,34 +105,26 @@ export default function AsukaBrewing() {
   const placeOrder = async () => {
     setBusy(true);
     try {
-      const orderPayload = {
-        items: cart.map((i) => ({ name: i.name, weight: i.weight, qty: i.qty, price: i.price, subtotal: i.price * i.qty })),
-        shipment: SHIP_OPTIONS.find((o) => o.id === shipment),
-        customer: form,
-        total: grandTotal,
-        status: "pending",
-        paymentProof: proof || null,
-        createdAt: new Date().toISOString(),
-      };
-      const id = await pushOrder(orderPayload);
-
-      // Decrement stock on each ordered product. Best-effort: failures are logged
-      // but don't roll back the order — admin can adjust stock manually if needed.
-      Promise.all(
-        cart.map((it) =>
-          decrementProductStock(it.id, it.qty).catch((err) =>
-            console.warn(`Stock decrement failed for ${it.id}:`, err),
-          ),
-        ),
-      );
-
-      fetch("/api/notify-order", {
+      // The server prices the order from the real catalog + shipping table,
+      // writes it, and decrements stock. Prices/total are NOT trusted from here.
+      const res = await fetch("/api/order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, ...orderPayload }),
-      }).catch((err) => console.warn("Notify failed:", err));
+        body: JSON.stringify({
+          items: cart.map((i) => ({ id: i.id, qty: i.qty })),
+          shipment,
+          customer: form,
+          paymentProof: proof || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast(data?.error || "Order gagal. Coba lagi.");
+        return;
+      }
 
-      setOid(id);
+      // Telegram notification is sent server-side by /api/order.
+      setOid(data.id);
       setCart([]);
       setForm({ name: "", contact: "", address: "" });
       setShipment(null);
@@ -141,7 +133,7 @@ export default function AsukaBrewing() {
       go("done");
     } catch (e) {
       console.error(e);
-      toast("Order failed. Check connection / Firebase config.");
+      toast("Order failed. Check your connection.");
     } finally {
       setBusy(false);
     }
@@ -168,8 +160,10 @@ export default function AsukaBrewing() {
         boxShadow: navOnDark ? "none" : "0 1px 0 var(--paper-edge)",
         transition: "all 0.4s",
       }}>
-        <span
+        <button
+          type="button"
           onClick={() => go("home")}
+          aria-label="Asuka — back to home"
           style={{
             fontFamily: "var(--font-fraunces), serif",
             fontVariationSettings: '"SOFT" 30',
@@ -179,18 +173,23 @@ export default function AsukaBrewing() {
             textTransform: "uppercase",
             cursor: "pointer",
             color: "inherit",
+            background: "none",
+            border: "none",
+            padding: 0,
           }}
-        >ASUKA</span>
+        >ASUKA</button>
         <div style={{ display: "flex", gap: "clamp(14px, 3vw, 32px)", alignItems: "center" }}>
-          <span onClick={() => go("track")} style={{
+          <button type="button" onClick={() => go("track")} aria-label="Track your order" style={{
             fontSize: 11, letterSpacing: "0.22em", textTransform: "uppercase",
             cursor: "pointer", fontWeight: 500, color: "inherit",
-          }}>Track</span>
-          <span onClick={() => go("cart")} style={{
+            background: "none", border: "none", padding: 0, fontFamily: "inherit",
+          }}>Track</button>
+          <button type="button" onClick={() => go("cart")} aria-label={`Cart, ${cartCount} ${cartCount === 1 ? "item" : "items"}`} style={{
             position: "relative", display: "inline-flex", alignItems: "center", gap: 8,
             padding: "8px 16px", border: "1px solid currentColor", borderRadius: 999,
             fontSize: 11, letterSpacing: "0.22em", textTransform: "uppercase",
             cursor: "pointer", fontWeight: 600, color: "inherit",
+            background: "transparent", fontFamily: "inherit",
           }}>
             Cart
             {cartCount > 0 && (
@@ -200,7 +199,7 @@ export default function AsukaBrewing() {
                 letterSpacing: 0,
               }}>{cartCount}</span>
             )}
-          </span>
+          </button>
         </div>
       </nav>
 
@@ -252,11 +251,12 @@ export default function AsukaBrewing() {
             fontSize: 11, letterSpacing: "0.25em", textTransform: "uppercase",
             textDecoration: "none", fontWeight: 600,
           }}>WhatsApp</a>
-          <span onClick={() => go("track")} style={{
+          <button type="button" onClick={() => go("track")} style={{
             color: "rgba(251,247,237,0.58)",
             fontSize: 11, letterSpacing: "0.25em", textTransform: "uppercase",
             cursor: "pointer", fontWeight: 600,
-          }}>Track Order</span>
+            background: "none", border: "none", padding: 0, fontFamily: "inherit",
+          }}>Track Order</button>
         </div>
         <div style={{
           marginTop: 48, paddingTop: 24, borderTop: "1px solid rgba(251,247,237,0.1)",

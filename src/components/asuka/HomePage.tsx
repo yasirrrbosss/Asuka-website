@@ -1,5 +1,6 @@
 "use client";
 import { useState, useRef, useEffect } from "react";
+import Image from "next/image";
 import type { Product } from "@/lib/types";
 import { HERO_PHOTOS, GOOGLE_MAPS_PLACE_URL } from "@/lib/constants";
 import { ProductCard } from "./ProductCard";
@@ -53,10 +54,13 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
       }} className="hero-grid">
         {/* MAIN side */}
         <div style={{ position: "relative", overflow: "hidden" }}>
-          <img
+          <Image
             src={HERO_PHOTOS.pour}
             alt="Coffee being poured"
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+            fill
+            priority
+            sizes="(max-width: 880px) 100vw, 55vw"
+            style={{ objectFit: "cover" }}
           />
           <div style={{
             position: "absolute", inset: 0,
@@ -91,25 +95,21 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
                 fontVariationSettings: '"SOFT" 60, "WONK" 1',
               }}>slow coffee</em>,
               <br />roasted in Pejaten.
-              <span style={{
-                display: "block",
-                fontSize: "0.32em",
-                fontWeight: 400,
-                color: "rgba(251,247,237,0.9)",
-                letterSpacing: "0.01em",
-                marginTop: 22,
-                lineHeight: 1.55,
-                fontStyle: "normal",
-                fontFamily: "var(--font-inter), sans-serif",
-                fontVariationSettings: "normal",
-              }}>
-                From the very beginning, every roast has been our own — crafted with care, cup after cup. Where your perception finds its place.
-              </span>
             </h1>
+            <p style={{
+              fontSize: "clamp(13px, 1.6vw, 17px)",
+              fontWeight: 400,
+              color: "rgba(251,247,237,0.9)",
+              letterSpacing: "0.01em",
+              marginBottom: 24,
+              lineHeight: 1.55,
+              maxWidth: 520,
+              fontFamily: "var(--font-inter), sans-serif",
+            }}>
+              From the very beginning, every roast has been our own — crafted with care, cup after cup. Where your perception finds its place.
+            </p>
             <a
-              onClick={() => {
-                document.getElementById("collection")?.scrollIntoView({ behavior: "smooth", block: "start" });
-              }}
+              href="#collection"
               style={{
                 display: "inline-flex", alignItems: "center", gap: 14,
                 fontSize: 11, letterSpacing: "0.28em", textTransform: "uppercase",
@@ -123,10 +123,12 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
 
         {/* ASIDE — beans + spinning stamp */}
         <div style={{ position: "relative", background: "var(--ink)", color: "var(--cream)" }}>
-          <img
+          <Image
             src={HERO_PHOTOS.beans}
             alt="Coffee beans"
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", opacity: 0.55 }}
+            fill
+            sizes="(max-width: 880px) 100vw, 45vw"
+            style={{ objectFit: "cover", opacity: 0.55 }}
           />
           <div style={{
             position: "absolute", inset: 0,
@@ -180,9 +182,7 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
               Visit · Jakarta Selatan
             </div>
             <a
-              onClick={() => {
-                document.getElementById("the-space")?.scrollIntoView({ behavior: "smooth", block: "start" });
-              }}
+              href="#the-space"
               style={{
                 display: "inline-flex", alignItems: "center", gap: 14,
                 fontSize: 11, letterSpacing: "0.28em", textTransform: "uppercase",
@@ -312,10 +312,12 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
         position: "relative", height: "80vh", minHeight: 540,
         overflow: "hidden", color: "var(--cream)",
       }}>
-        <img
+        <Image
           src={HERO_PHOTOS.cafeInterior}
           alt="Cafe interior"
-          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+          fill
+          sizes="100vw"
+          style={{ objectFit: "cover" }}
         />
         <div style={{
           position: "absolute", inset: 0,
