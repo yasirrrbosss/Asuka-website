@@ -1,6 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
-import { fetchProductsFromDB } from "@/lib/firebase";
+import { fetchProducts } from "@/lib/products";
 import { compressImageForUpload } from "@/lib/format";
 import { SHIP_OPTIONS, WHATSAPP_NUMBER } from "@/lib/constants";
 import type { Product, CartItem, CustomerForm } from "@/lib/types";
@@ -51,8 +51,8 @@ export default function AsukaBrewing() {
       setProductsLoading(true);
       setProductsError(null);
       try {
-        const data = await fetchProductsFromDB();
-        if (mounted) setProducts(data as Product[]);
+        const data = await fetchProducts();
+        if (mounted) setProducts(data);
       } catch (e) {
         console.error("Failed to load products:", e);
         if (mounted) setProductsError("Couldn't load products. Check your connection.");

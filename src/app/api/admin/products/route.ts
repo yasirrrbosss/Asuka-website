@@ -11,6 +11,21 @@ function guard(req: Request) {
 
 const MAX_IMG_CHARS = 1_400_000;
 
+// Full product list for the dashboard (includes unavailable products). Kept
+// behind the admin guard so the dashboard doesn't need the client Firebase SDK.
+export async function GET(req: Request) {
+  const g = guard(req);
+  if (g instanceof NextResponse) return g;
+  try {
+    const snap = await g.collection("products").orderBy("createdAt", "desc").get();
+    const products = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    return NextResponse.json({ products });
+  } catch (err) {
+    console.error("/api/admin/products GET:", err);
+    return NextResponse.json({ error: "Failed to load products" }, { status: 502 });
+  }
+}
+
 // Whitelist and coerce product fields. `partial` allows updates that touch only
 // some fields (e.g. toggling availability) without wiping the rest.
 function sanitizeProduct(input: unknown, partial: boolean): { ok: true; data: Record<string, unknown> } | { ok: false; reason: string } {

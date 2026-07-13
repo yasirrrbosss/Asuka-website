@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "node:crypto";
 import { createRateLimiter } from "@/lib/rateLimit";
+import { checkSharedRateLimit } from "@/lib/sharedRateLimit";
+import { getAdminDb } from "@/lib/firebaseAdmin";
 import { signToken } from "@/lib/auth";
 
-const limiter = createRateLimiter({ max: 5, windowMs: 15 * 60 * 1000 });
+const LIMIT = { max: 5, windowMs: 15 * 60 * 1000 };
+// In-memory limiter runs first: it's free, and it stops a warm instance from
+// hammering Firestore once an attacker is already blocked. The Firestore-backed
+// limiter behind it is the real cross-instance cap (M1); if Firestore errors,
+// we fall back to memory-only rather than failing open or closed.
+const memoryLimiter = createRateLimiter(LIMIT);
 
 function getIp(req: NextRequest): string {
   const fwd = req.headers.get("x-forwarded-for");
@@ -22,7 +29,17 @@ function safeEqual(a: string, b: string): boolean {
 
 export async function POST(req: NextRequest) {
   const ip = getIp(req);
-  const limit = limiter.check(ip);
+  let limit = memoryLimiter.check(ip);
+  if (limit.allowed) {
+    const db = getAdminDb();
+    if (db) {
+      try {
+        limit = await checkSharedRateLimit(db, "admin-auth", ip, LIMIT);
+      } catch (err) {
+        console.error("/api/admin-auth: shared rate limit unavailable:", err);
+      }
+    }
+  }
   if (!limit.allowed) {
     return NextResponse.json(
       { error: `Too many attempts. Try again in ${Math.ceil(limit.retryAfterMs / 1000)} seconds.` },

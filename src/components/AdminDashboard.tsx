@@ -2,18 +2,9 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import type { ReactNode, CSSProperties } from "react";
 
-const FIREBASE_CONFIG = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY ?? "",
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN ?? "",
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ?? "",
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET ?? "",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID ?? "",
-};
-
-declare global { interface Window { firebase: any; } }
-let db: any = null, fbOk = false;
-const initFB = (): Promise<void> => new Promise((resolve) => { if (fbOk) return resolve(); const ld = (u: string): Promise<void> => new Promise((r) => { const s = document.createElement("script"); s.src = u; s.onload = () => r(); document.head.appendChild(s); }); ld("https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js").then(() => ld("https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js")).then(() => { if (!window.firebase.apps.length) window.firebase.initializeApp(FIREBASE_CONFIG); db = window.firebase.firestore(); fbOk = true; resolve(); }); });
+// All data access goes through the auth-gated /api/admin/* routes — the
+// dashboard deliberately does NOT load the client Firebase SDK (no CDN
+// scripts, no direct Firestore reads).
 
 const rp = (n: number) => `Rp ${(n||0).toLocaleString("id-ID")}`;
 const fmtD = (d: string|null|undefined) => d ? new Date(d).toLocaleString("id-ID",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}) : "";
@@ -49,7 +40,7 @@ interface Order {
   customer:{name:string;contact:string;address:string}|null;
   total:number;
   status:string;                  // "pending" | "shipped" | "cancelled"
-  paymentProof:string|null;
+  hasProof:boolean;               // proof image itself is fetched on demand
   createdAt:string;
   shippedAt:string|null;
   paymentVerified?:boolean;
@@ -108,7 +99,8 @@ export default function AdminDashboard() {
   const [updating,setUpdating]=useState<string|null>(null);
   const [refreshing,setRefreshing]=useState(false);
   const [loading,setLoading]=useState(false);
-  const [proofModal,setProofModal]=useState<string|null>(null);
+  // Proof modal: img is null while the on-demand fetch is in flight.
+  const [proofModal,setProofModal]=useState<{id:string;img:string|null}|null>(null);
 
   const [prods,setProds]=useState<Prod[]>([]);
   const [pLoading,setPLoading]=useState(false);
@@ -120,23 +112,29 @@ export default function AdminDashboard() {
   const [dragOver,setDragOver]=useState(false);
   const [imgUploading,setImgUploading]=useState(false);
   const [imgErr,setImgErr]=useState("");
-  const [flash,setFlash]=useState<string|null>(null);
+  const [flash,setFlash]=useState<{msg:string;kind:"error"|"success"}|null>(null);
   const fileInputRef=useRef<HTMLInputElement|null>(null);
+  const flashTimer=useRef<number|undefined>(undefined);
 
-  const showFlash=(m:string)=>{setFlash(m);window.setTimeout(()=>setFlash(null),3500);};
+  const showFlash=(msg:string,kind:"error"|"success"="error")=>{
+    setFlash({msg,kind});
+    window.clearTimeout(flashTimer.current);
+    flashTimer.current=window.setTimeout(()=>setFlash(null),3500);
+  };
 
   const getToken=()=>{try{return window.sessionStorage?.getItem("asuka_admin_token")??"";}catch{return "";}};
 
   // Authenticated JSON call to an admin API route. On 401 (expired/invalid
   // session) it logs the admin out so they re-authenticate. Returns null on any
   // failure (after surfacing a message) so callers can bail cleanly.
-  const adminApi=async(url:string,method:string,body?:unknown):Promise<any|null>=>{
+  interface ApiData{orders?:Order[];products?:Prod[];proof?:string|null;update?:Record<string,unknown>;removed?:string[];id?:string;error?:string;}
+  const adminApi=async(url:string,method:string,body?:unknown):Promise<ApiData|null>=>{
     let res:Response;
     try{
       res=await fetch(url,{method,headers:{"Content-Type":"application/json",Authorization:`Bearer ${getToken()}`},body:body===undefined?undefined:JSON.stringify(body)});
     }catch{showFlash("Tidak bisa terhubung ke server.");return null;}
     if(res.status===401){setLoggedIn(false);try{window.sessionStorage?.removeItem("asuka_admin_token");}catch{}showFlash("Sesi berakhir. Silakan login lagi.");return null;}
-    let data:any=null;try{data=await res.json();}catch{}
+    let data:ApiData|null=null;try{data=await res.json();}catch{}
     if(!res.ok){showFlash(data?.error||"Operasi gagal.");return null;}
     return data??{};
   };
@@ -153,7 +151,30 @@ export default function AdminDashboard() {
   };
 
   const fetchOrders=async()=>{setRefreshing(true);try{const data=await adminApi("/api/admin/orders","GET");if(data?.orders)setOrders(data.orders as Order[]);}finally{setRefreshing(false);}};
-  const fetchProds=async()=>{setPLoading(true);try{await initFB();const s=await db.collection("products").orderBy("createdAt","desc").get();setProds(s.docs.map((d:any)=>({id:d.id,...d.data()}as Prod)));}catch(e){console.error(e);}finally{setPLoading(false);}};
+  const fetchProds=async()=>{setPLoading(true);try{const data=await adminApi("/api/admin/products","GET");if(data?.products)setProds(data.products as Prod[]);}finally{setPLoading(false);}};
+
+  // Payment proofs are excluded from the order list (they're big base64
+  // blobs) — fetch a single one only when the admin opens it.
+  const openProof=async(orderId:string)=>{
+    setProofModal({id:orderId,img:null});
+    const data=await adminApi(`/api/admin/orders?proof=${encodeURIComponent(orderId)}`,"GET");
+    if(!data){setProofModal(null);return;}
+    if(!data.proof){setProofModal(null);showFlash("Bukti pembayaran tidak ditemukan.");return;}
+    setProofModal(cur=>cur&&cur.id===orderId?{id:orderId,img:data.proof as string}:cur);
+  };
+
+  // Escape closes whichever overlay is open (proof modal / product form).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setProofModal(null);
+      setShowForm(false);
+      setEditP(null);
+      setDelConfirm(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -172,6 +193,7 @@ export default function AdminDashboard() {
           window.sessionStorage?.removeItem("asuka_admin_token");
           return;
         }
+        if (typeof d.user === "string") setUsername(d.user);
         setLoggedIn(true);
         setLoading(true);
         Promise.all([fetchOrders(), fetchProds()]).finally(() => setLoading(false));
@@ -184,9 +206,6 @@ export default function AdminDashboard() {
   const handleLogin=async()=>{setLoginErr("");setLoginLoading(true);try{const r=await fetch("/api/admin-auth",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,password})});const d=await r.json();if(r.ok&&d.success){setLoggedIn(true);setPassword("");try{window.sessionStorage?.setItem("asuka_admin_token",d.token);}catch{}setLoading(true);Promise.all([fetchOrders(),fetchProds()]).finally(()=>setLoading(false));}else{setLoginErr(d.error||"Login gagal.");}}catch{setLoginErr("Tidak bisa connect.");}finally{setLoginLoading(false);}};
   const handleLogout=()=>{setLoggedIn(false);setUsername("");setPassword("");setOrders([]);setProds([]);try{window.sessionStorage?.removeItem("asuka_admin_token");}catch{}};
 
-  // Legacy single-toggle kept only as defensive fallback; actions below replace it.
-  // (Removed call-sites use markShipped/undoShipped/cancelOrder instead.)
-
   // Guard against CSV/formula injection: a field starting with = + - @ (or a
   // control char) can execute as a formula when the file is opened in Excel/
   // Sheets. Prefix those with a single quote, then quote/escape for CSV.
@@ -197,7 +216,7 @@ export default function AdminDashboard() {
   };
   const downloadCSV=()=>{const l=filteredOrders;const h=["Order ID","Tanggal","Nama","WA","Alamat","Items","Pengiriman","Ongkir","Total","Status","Tgl Kirim"];const rows=l.map(o=>[o.id,fmtD(o.createdAt),o.customer?.name??"",o.customer?.contact??"",o.customer?.address??"",(o.items??[]).map(i=>`${i.name} x${i.qty}`).join("; "),o.shipment?.label??"",o.shipment?.price??0,o.total??0,o.status??"pending",o.shippedAt?fmtD(o.shippedAt):""].map(csvCell));const csv=[h.map(csvCell).join(","),...rows.map(r=>r.join(","))].join("\n");const b=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=`asuka-orders-${new Date().toISOString().slice(0,10)}.csv`;a.click();URL.revokeObjectURL(u);};
 
-  const needsVerify=(o:Order):boolean=>!!o.paymentProof&&!o.paymentVerified&&o.status!=="cancelled";
+  const needsVerify=(o:Order):boolean=>o.hasProof&&!o.paymentVerified&&o.status!=="cancelled";
 
   const getFilteredOrders=():Order[]=>{
     let l=orders;
@@ -271,7 +290,7 @@ export default function AdminDashboard() {
   },[orders,aRange]);
 
   // Real-time (not period-based) operational signals
-  const awaitingVerifyCount=orders.filter(o=>!!o.paymentProof&&!o.paymentVerified&&o.status!=="cancelled").length;
+  const awaitingVerifyCount=oS.needsVerify;
   const outOfStockProds=prods.filter(p=>p.stock===0);
   const lowStockProds=prods.filter(p=>p.stock!==undefined&&p.stock!==null&&p.stock>0&&p.stock<=5);
 
@@ -296,89 +315,73 @@ export default function AdminDashboard() {
         setProds(p=>[{id:r.id,...data,createdAt:new Date().toISOString()}as Prod,...p]);
       }
       closeForm();
+      showFlash(editP?"Produk diupdate.":"Produk ditambahkan.","success");
     }finally{setPSaving(false);}
   };
 
   // ── ORDER ACTIONS ── (all writes go through the auth-gated admin API)
-  const verifyPayment=async(id:string)=>{
+  // The server validates the state transition against the CURRENT document and
+  // returns the fields it actually wrote — local state mirrors that response
+  // instead of guessing timestamps/values client-side.
+  const orderAction=async(id:string,payload:Record<string,unknown>,successMsg?:string):Promise<boolean>=>{
     setUpdating(id);
     try{
-      const now=new Date().toISOString();
-      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"verify"});
-      if(!r)return;
-      setOrders(p=>p.map(o=>o.id===id?{...o,paymentVerified:true,paymentVerifiedAt:now}:o));
+      const r=await adminApi("/api/admin/orders","PATCH",{id,...payload});
+      if(!r)return false;
+      setOrders(p=>p.map(o=>{
+        if(o.id!==id)return o;
+        const next:Record<string,unknown>={...o,...(r.update??{})};
+        for(const k of (r.removed??[])as string[])delete next[k];
+        return next as unknown as Order;
+      }));
+      if(successMsg)showFlash(successMsg,"success");
+      return true;
     }finally{setUpdating(null);}
   };
 
-  const markShipped=async(id:string,courier:string,resi:string)=>{
-    if(!courier.trim()||!resi.trim())return;
-    setUpdating(id);
-    try{
-      const now=new Date().toISOString();
-      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"ship",courier:courier.trim(),resi:resi.trim()});
-      if(!r)return;
-      setOrders(p=>p.map(o=>o.id===id?{...o,status:"shipped",shippedAt:now,trackingCourier:courier.trim(),trackingNumber:resi.trim()}:o));
-    }finally{setUpdating(null);}
+  const verifyPayment=(id:string)=>orderAction(id,{action:"verify"},"Pembayaran diverifikasi.");
+  const markShipped=(id:string,courier:string,resi:string)=>{
+    if(!courier.trim()||!resi.trim()){showFlash("Isi courier dan no. resi dulu.");return Promise.resolve(false);}
+    return orderAction(id,{action:"ship",courier:courier.trim(),resi:resi.trim()},"Order ditandai shipped.");
   };
-
-  const undoShipped=async(id:string)=>{
-    setUpdating(id);
-    try{
-      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"undo"});
-      if(!r)return;
-      setOrders(p=>p.map(o=>o.id===id?{...o,status:"pending",shippedAt:null}:o));
-    }finally{setUpdating(null);}
+  const undoShipped=(id:string)=>orderAction(id,{action:"undo"},"Order dikembalikan ke pending.");
+  const cancelOrder=(id:string,reason:string)=>{
+    if(!reason.trim())return Promise.resolve(false);
+    return orderAction(id,{action:"cancel",reason:reason.trim()},"Order dibatalkan. Stok produk (pending) dikembalikan.");
   };
-
-  const cancelOrder=async(id:string,reason:string)=>{
-    if(!reason.trim())return;
-    setUpdating(id);
-    try{
-      const now=new Date().toISOString();
-      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"cancel",reason:reason.trim()});
-      if(!r)return;
-      setOrders(p=>p.map(o=>o.id===id?{...o,status:"cancelled",cancelledAt:now,cancelReason:reason.trim()}:o));
-    }finally{setUpdating(null);}
-  };
-
-  const saveNotes=async(id:string,notes:string)=>{
-    setUpdating(id);
-    try{
-      const r=await adminApi("/api/admin/orders","PATCH",{id,action:"notes",notes});
-      if(!r)return;
-      setOrders(p=>p.map(o=>o.id===id?{...o,internalNotes:notes}:o));
-    }finally{setUpdating(null);}
-  };
+  const saveNotes=(id:string,notes:string)=>orderAction(id,{action:"notes",notes},"Catatan disimpan.");
 
   const toggleAvail=async(id:string,cur:boolean)=>{const r=await adminApi("/api/admin/products","PATCH",{id,data:{available:!cur}});if(!r)return;setProds(p=>p.map(pr=>pr.id===id?{...pr,available:!cur}:pr));};
-  const deleteProd=async(id:string)=>{const r=await adminApi("/api/admin/products","DELETE",{id});if(!r)return;setProds(p=>p.filter(pr=>pr.id!==id));setDelConfirm(null);};
+  const deleteProd=async(id:string)=>{const r=await adminApi("/api/admin/products","DELETE",{id});if(!r)return;setProds(p=>p.filter(pr=>pr.id!==id));setDelConfirm(null);showFlash("Produk dihapus.","success");};
 
-  const inp:CSSProperties={width:"100%",padding:"11px 14px",borderRadius:10,border:"1.5px solid #262626",fontSize:14,background:"#1a1a1a",color:"#e8e4df",fontFamily:"'DM Sans',sans-serif"};
+  const inp:CSSProperties={width:"100%",padding:"11px 14px",borderRadius:10,border:"1.5px solid #262626",fontSize:14,background:"#1a1a1a",color:"#e8e4df",fontFamily:"var(--font-dm-sans),sans-serif"};
   const lab:CSSProperties={fontSize:11,fontWeight:600,color:"#666",marginBottom:5,display:"block",letterSpacing:.3};
   const tb:CSSProperties={display:"flex",alignItems:"center",justifyContent:"center",padding:"8px 12px",borderRadius:8,border:"1.5px solid #262626",background:"transparent",color:"#777",cursor:"pointer"};
 
   return (
-    <div style={{fontFamily:"'DM Sans',sans-serif",background:"#111",color:"#e8e4df",minHeight:"100vh"}}>
-      <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Cormorant+Garamond:wght@500;600;700&display=swap" rel="stylesheet"/>
+    <div style={{fontFamily:"var(--font-dm-sans),sans-serif",background:"#111",color:"#e8e4df",minHeight:"100vh"}}>
 
       {!loggedIn&&(
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",padding:20}}>
           <div style={{width:"100%",maxWidth:360,animation:"fadeUp .5s ease"}}>
-            <div style={{textAlign:"center",marginBottom:32}}><div style={{fontSize:28,marginBottom:8}}>☕</div><h1 style={{fontFamily:"'Cormorant Garamond',serif",color:"#e8e4df",fontSize:24}}>Asuka Admin</h1><p style={{color:"#555",fontSize:13,marginTop:4}}>Login untuk mengelola pesanan & produk</p></div>
-            <div style={{background:"#1a1a1a",borderRadius:16,padding:24,border:"1px solid #262626"}}>
-              <div style={{marginBottom:14}}><label style={lab}>Username</label><input type="text" value={username} onChange={e=>setUsername(e.target.value)} placeholder="admin" style={inp} onKeyDown={e=>e.key==="Enter"&&handleLogin()} disabled={loginLoading}/></div>
-              <div style={{marginBottom:18}}><label style={lab}>Password</label><input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" style={inp} onKeyDown={e=>e.key==="Enter"&&handleLogin()} disabled={loginLoading}/></div>
-              {loginErr&&<p style={{color:"#e85d4a",fontSize:12,marginBottom:14,background:"rgba(232,93,74,.08)",padding:"8px 12px",borderRadius:8}}>{loginErr}</p>}
-              <button onClick={handleLogin} disabled={loginLoading} style={{width:"100%",background:loginLoading?"#2a3a2b":"#3d5a3e",color:"#f4f1eb",border:"none",padding:"13px",borderRadius:10,fontSize:14,fontWeight:600,cursor:loginLoading?"wait":"pointer"}}>{loginLoading?"Checking...":"Sign In"}</button>
-            </div>
+            <div style={{textAlign:"center",marginBottom:32}}><div style={{fontSize:28,marginBottom:8}}>☕</div><h1 style={{fontFamily:"var(--font-cormorant),serif",color:"#e8e4df",fontSize:24}}>Asuka Admin</h1><p style={{color:"#555",fontSize:13,marginTop:4}}>Login untuk mengelola pesanan & produk</p></div>
+            <form onSubmit={e=>{e.preventDefault();handleLogin();}} style={{background:"#1a1a1a",borderRadius:16,padding:24,border:"1px solid #262626"}}>
+              <div style={{marginBottom:14}}><label htmlFor="admin-user" style={lab}>Username</label><input id="admin-user" name="username" type="text" autoComplete="username" autoFocus value={username} onChange={e=>setUsername(e.target.value)} placeholder="admin" style={inp} disabled={loginLoading}/></div>
+              <div style={{marginBottom:18}}><label htmlFor="admin-pass" style={lab}>Password</label><input id="admin-pass" name="password" type="password" autoComplete="current-password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••" style={inp} disabled={loginLoading}/></div>
+              {loginErr&&<p role="alert" style={{color:"#e85d4a",fontSize:12,marginBottom:14,background:"rgba(232,93,74,.08)",padding:"8px 12px",borderRadius:8}}>{loginErr}</p>}
+              <button type="submit" disabled={loginLoading} style={{width:"100%",background:loginLoading?"#2a3a2b":"#3d5a3e",color:"#f4f1eb",border:"none",padding:"13px",borderRadius:10,fontSize:14,fontWeight:600,cursor:loginLoading?"wait":"pointer"}}>{loginLoading?"Checking...":"Sign In"}</button>
+            </form>
           </div>
         </div>
       )}
 
       {loggedIn&&(<>
-        {flash&&(<div style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:300,background:"#2a1a1a",border:"1px solid rgba(232,93,74,.4)",color:"#e8a89a",padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:600,boxShadow:"0 8px 30px rgba(0,0,0,.4)"}}>{flash}</div>)}
+        {flash&&(<div role="status" style={{position:"fixed",top:16,left:"50%",transform:"translateX(-50%)",zIndex:300,padding:"10px 18px",borderRadius:10,fontSize:13,fontWeight:600,boxShadow:"0 8px 30px rgba(0,0,0,.4)",animation:"fadeUp .25s ease",
+          background:flash.kind==="success"?"#16241a":"#2a1a1a",
+          border:flash.kind==="success"?"1px solid rgba(127,170,128,.4)":"1px solid rgba(232,93,74,.4)",
+          color:flash.kind==="success"?"#9ec89f":"#e8a89a"}}>{flash.msg}</div>)}
         <header style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"14px 24px",borderBottom:"1px solid #1a1a1a",background:"#111",position:"sticky",top:0,zIndex:50}}>
-          <div style={{display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:18}}>☕</span><span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:16,fontWeight:600,color:"#e8e4df",letterSpacing:1}}>ASUKA ADMIN</span></div>
+          <div style={{display:"flex",alignItems:"center",gap:10}}><span style={{fontSize:18}}>☕</span><span style={{fontFamily:"var(--font-cormorant),serif",fontSize:16,fontWeight:600,color:"#e8e4df",letterSpacing:1}}>ASUKA ADMIN</span></div>
           <div style={{display:"flex",alignItems:"center",gap:12}}><span style={{fontSize:12,color:"#555"}}>{username}</span><button onClick={handleLogout} style={{background:"none",border:"1px solid #2a2a2a",color:"#777",padding:"5px 14px",borderRadius:6,fontSize:11,cursor:"pointer",fontWeight:500}}>Logout</button></div>
         </header>
 
@@ -399,7 +402,7 @@ export default function AdminDashboard() {
               ))}
             </div>
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:16}}>
-              <div style={{display:"flex",gap:6}}>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                 {[
                   {k:"all",l:`All (${oS.all})`,c:undefined},
                   {k:"pending",l:`Pending (${oS.pending})`,c:undefined},
@@ -419,10 +422,10 @@ export default function AdminDashboard() {
                   );
                 })}
               </div>
-              <div style={{display:"flex",gap:8,alignItems:"center"}}>
-                <input type="text" placeholder="Cari..." value={oSearch} onChange={e=>setOSearch(e.target.value)} style={{...inp,width:200,padding:"8px 12px",fontSize:12}}/>
-                <button onClick={fetchOrders} style={tb}><span style={{display:"flex",animation:refreshing?"spin .8s linear infinite":"none"}}>{Ic.refresh}</span></button>
-                <button onClick={downloadCSV} style={{...tb,background:"#3d5a3e",color:"#e8e4df",borderColor:"#3d5a3e"}}>{Ic.download}<span style={{marginLeft:5,fontSize:11,fontWeight:600}}>CSV</span></button>
+              <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",flex:"1 1 260px",justifyContent:"flex-end"}}>
+                <input type="search" aria-label="Cari order (nama, WA, atau order ID)" placeholder="Cari nama / WA / ID..." value={oSearch} onChange={e=>setOSearch(e.target.value)} style={{...inp,flex:"1 1 140px",maxWidth:240,padding:"8px 12px",fontSize:12}}/>
+                <button onClick={fetchOrders} aria-label="Refresh daftar order" title="Refresh" style={tb}><span style={{display:"flex",animation:refreshing?"spin .8s linear infinite":"none"}}>{Ic.refresh}</span></button>
+                <button onClick={downloadCSV} aria-label="Download CSV order" style={{...tb,background:"#3d5a3e",color:"#e8e4df",borderColor:"#3d5a3e"}}>{Ic.download}<span style={{marginLeft:5,fontSize:11,fontWeight:600}}>CSV</span></button>
               </div>
             </div>
             {loading&&<div style={{textAlign:"center",padding:"60px 20px",color:"#555"}}>Loading...</div>}
@@ -434,7 +437,7 @@ export default function AdminDashboard() {
                 exp={expanded===o.id}
                 toggle={()=>setExpanded(expanded===o.id?null:o.id)}
                 busy={updating===o.id}
-                onProof={(img:string)=>setProofModal(img)}
+                onProof={()=>openProof(o.id)}
                 onVerify={()=>verifyPayment(o.id)}
                 onShip={(c,r)=>markShipped(o.id,c,r)}
                 onUndoShip={()=>undoShipped(o.id)}
@@ -612,24 +615,24 @@ export default function AdminDashboard() {
 
           {/* ═══ PRODUCTS ═══ */}
           {tab==="products"&&(<>
-            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20,flexWrap:"wrap",gap:12}}>
               <div><h2 style={{fontSize:20,fontWeight:700,color:"#e8e4df"}}>Manage Beans</h2><p style={{fontSize:12,color:"#555",marginTop:2}}>{prods.length} produk · {prods.filter(p=>p.available).length} tersedia</p></div>
               <div style={{display:"flex",gap:8}}>
-                <button onClick={fetchProds} style={tb}><span style={{display:"flex",animation:pLoading?"spin .8s linear infinite":"none"}}>{Ic.refresh}</span></button>
+                <button onClick={fetchProds} aria-label="Refresh daftar produk" title="Refresh" style={tb}><span style={{display:"flex",animation:pLoading?"spin .8s linear infinite":"none"}}>{Ic.refresh}</span></button>
                 <button onClick={openAdd} style={{...tb,background:"#3d5a3e",color:"#e8e4df",borderColor:"#3d5a3e",gap:6}}>{Ic.plus}<span style={{fontSize:12,fontWeight:600}}>Tambah Beans</span></button>
               </div>
             </div>
 
             {pLoading&&<div style={{textAlign:"center",padding:"60px",color:"#555"}}>Loading...</div>}
-            {!pLoading&&prods.length===0&&<div style={{textAlign:"center",padding:"60px",color:"#444"}}><p>Belum ada produk.</p><p style={{fontSize:12,color:"#555",marginTop:4}}>Klik "Tambah Beans" untuk mulai.</p></div>}
+            {!pLoading&&prods.length===0&&<div style={{textAlign:"center",padding:"60px",color:"#444"}}><p>Belum ada produk.</p><p style={{fontSize:12,color:"#555",marginTop:4}}>Klik &quot;Tambah Beans&quot; untuk mulai.</p></div>}
             {!pLoading&&prods.length>0&&(
               <div style={{display:"flex",flexDirection:"column",gap:8}}>
                 {prods.map(p=>(
-                  <div key={p.id} style={{background:"#161616",borderRadius:14,border:"1px solid #1e1e1e",padding:"16px 18px",display:"flex",alignItems:"center",gap:14}}>
+                  <div key={p.id} style={{background:"#161616",borderRadius:14,border:"1px solid #1e1e1e",padding:"16px 18px",display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
                     <div style={{width:48,height:48,borderRadius:10,background:p.cat==="espresso"?"linear-gradient(135deg,#1a1a1a,#2d2d2d)":"linear-gradient(135deg,#3d5a3e,#5a7d5c)",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden",opacity:p.available?1:.4}}>
                       {p.img?<img src={p.img} alt="" style={{width:"100%",height:"100%",objectFit:"cover"}}/>:Ic.coffee}
                     </div>
-                    <div style={{flex:1,minWidth:0,opacity:p.available?1:.5}}>
+                    <div style={{flex:"1 1 180px",minWidth:0,opacity:p.available?1:.5}}>
                       <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
                         <span style={{fontWeight:600,fontSize:14,color:"#e8e4df"}}>{p.name}</span>
                         <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:p.cat==="espresso"?"rgba(139,105,20,.1)":"rgba(61,90,62,.1)",color:p.cat==="espresso"?"#c4a132":"#7faa80",textTransform:"uppercase",letterSpacing:.5}}>{p.cat}</span>
@@ -642,10 +645,10 @@ export default function AdminDashboard() {
                         {p.stock!==undefined&&<> · <b style={{color:p.stock===0?"#e85d4a":p.stock<=5?"#e8a838":"#7faa80"}}>{p.stock} stok</b></>}
                       </div>
                     </div>
-                    <div style={{display:"flex",gap:6,flexShrink:0}}>
+                    <div style={{display:"flex",gap:6,flexShrink:0,marginLeft:"auto"}}>
                       <button onClick={()=>toggleAvail(p.id!,p.available)} style={{...tb,padding:"6px 12px",fontSize:11,gap:4,background:p.available?"rgba(232,168,56,.1)":"rgba(90,154,122,.1)",borderColor:p.available?"rgba(232,168,56,.2)":"rgba(90,154,122,.2)",color:p.available?"#e8a838":"#5a9a7a"}}>{p.available?"Sold Out":"Available"}</button>
-                      <button onClick={()=>openEdit(p)} style={{...tb,padding:"6px 10px"}}>{Ic.edit}</button>
-                      {delConfirm===p.id?(<div style={{display:"flex",gap:4}}><button onClick={()=>deleteProd(p.id!)} style={{...tb,padding:"6px 10px",background:"rgba(232,93,74,.15)",borderColor:"rgba(232,93,74,.3)",color:"#e85d4a"}}>Ya</button><button onClick={()=>setDelConfirm(null)} style={{...tb,padding:"6px 10px"}}>Batal</button></div>):(<button onClick={()=>setDelConfirm(p.id!)} style={{...tb,padding:"6px 10px",color:"#555"}}>{Ic.trash}</button>)}
+                      <button onClick={()=>openEdit(p)} aria-label={`Edit ${p.name}`} title="Edit" style={{...tb,padding:"6px 10px"}}>{Ic.edit}</button>
+                      {delConfirm===p.id?(<div style={{display:"flex",gap:4}}><button onClick={()=>deleteProd(p.id!)} aria-label={`Konfirmasi hapus ${p.name}`} style={{...tb,padding:"6px 10px",background:"rgba(232,93,74,.15)",borderColor:"rgba(232,93,74,.3)",color:"#e85d4a"}}>Ya</button><button onClick={()=>setDelConfirm(null)} style={{...tb,padding:"6px 10px"}}>Batal</button></div>):(<button onClick={()=>setDelConfirm(p.id!)} aria-label={`Hapus ${p.name}`} title="Hapus" style={{...tb,padding:"6px 10px",color:"#555"}}>{Ic.trash}</button>)}
                     </div>
                   </div>
                 ))}
@@ -654,7 +657,7 @@ export default function AdminDashboard() {
 
             {/* Form Modal */}
             {showForm&&(
-              <div style={{position:"fixed",inset:0,zIndex:200,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={closeForm}>
+              <div role="dialog" aria-modal="true" aria-label={editP?"Edit beans":"Tambah beans baru"} style={{position:"fixed",inset:0,zIndex:200,background:"rgba(0,0,0,.7)",display:"flex",alignItems:"center",justifyContent:"center",padding:20}} onClick={closeForm}>
                 <div style={{background:"#1a1a1a",borderRadius:16,padding:28,width:"100%",maxWidth:480,maxHeight:"90vh",overflowY:"auto",border:"1px solid #262626"}} onClick={e=>e.stopPropagation()}>
                   <h3 style={{fontSize:18,fontWeight:700,color:"#e8e4df",marginBottom:20}}>{editP?"Edit Beans":"Tambah Beans Baru"}</h3>
                   <div style={{display:"flex",flexDirection:"column",gap:12}}>
@@ -725,7 +728,18 @@ export default function AdminDashboard() {
         </div>
       </>)}
 
-      {proofModal&&(<div onClick={()=>setProofModal(null)} style={{position:"fixed",inset:0,zIndex:200,background:"rgba(0,0,0,.85)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,cursor:"zoom-out"}}><div style={{maxWidth:500,maxHeight:"90vh",position:"relative"}}><img src={proofModal} alt="Bukti" style={{width:"100%",height:"auto",maxHeight:"85vh",objectFit:"contain",borderRadius:12}}/><div style={{position:"absolute",top:-12,right:-12,width:32,height:32,borderRadius:"50%",background:"#333",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,cursor:"pointer"}}>×</div></div></div>)}
+      {proofModal&&(
+        <div role="dialog" aria-modal="true" aria-label="Bukti pembayaran" onClick={()=>setProofModal(null)} style={{position:"fixed",inset:0,zIndex:200,background:"rgba(0,0,0,.85)",display:"flex",alignItems:"center",justifyContent:"center",padding:20,cursor:"zoom-out"}}>
+          {proofModal.img?(
+            <div style={{maxWidth:500,maxHeight:"90vh",position:"relative"}} onClick={e=>e.stopPropagation()}>
+              <img src={proofModal.img} alt="Bukti pembayaran" style={{width:"100%",height:"auto",maxHeight:"85vh",objectFit:"contain",borderRadius:12}}/>
+              <button onClick={()=>setProofModal(null)} aria-label="Tutup" style={{position:"absolute",top:-12,right:-12,width:32,height:32,borderRadius:"50%",border:"none",background:"#333",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,cursor:"pointer"}}>×</button>
+            </div>
+          ):(
+            <div style={{color:"#888",fontSize:13,display:"flex",alignItems:"center",gap:10}}><span style={{display:"flex",animation:"spin .8s linear infinite"}}>{Ic.refresh}</span> Memuat bukti pembayaran...</div>
+          )}
+        </div>
+      )}
 
       <style>{`@keyframes fadeUp{from{transform:translateY(16px);opacity:0}to{transform:translateY(0);opacity:1}}@keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}*{box-sizing:border-box;margin:0;padding:0}input:focus{outline:2px solid #3d5a3e;outline-offset:1px}::selection{background:#3d5a3e;color:#f4f1eb}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:#111}::-webkit-scrollbar-thumb{background:#2a2a2a;border-radius:3px}`}</style>
     </div>
@@ -737,12 +751,12 @@ function ORow({o,exp,toggle,onVerify,onShip,onUndoShip,onCancel,onSaveNotes,busy
   exp:boolean;
   toggle:()=>void;
   busy:boolean;
-  onProof:(img:string)=>void;
+  onProof:()=>void;
   onVerify:()=>void;
   onShip:(courier:string,resi:string)=>void;
   onUndoShip:()=>void;
-  onCancel:(reason:string)=>void;
-  onSaveNotes:(notes:string)=>void;
+  onCancel:(reason:string)=>Promise<boolean>;
+  onSaveNotes:(notes:string)=>Promise<boolean>;
 }){
   const isShipped=o.status==="shipped";
   const isCancelled=o.status==="cancelled";
@@ -759,7 +773,7 @@ function ORow({o,exp,toggle,onVerify,onShip,onUndoShip,onCancel,onSaveNotes,busy
   const statusBg=isShipped?"rgba(90,154,122,.1)":isCancelled?"rgba(232,93,74,.1)":"rgba(232,168,56,.1)";
   const statusLabel=isShipped?"shipped":isCancelled?"cancelled":"pending";
 
-  const inpDark:CSSProperties={width:"100%",padding:"9px 12px",borderRadius:8,border:"1.5px solid #262626",fontSize:13,background:"#1a1a1a",color:"#e8e4df",fontFamily:"'DM Sans',sans-serif"};
+  const inpDark:CSSProperties={width:"100%",padding:"9px 12px",borderRadius:8,border:"1.5px solid #262626",fontSize:13,background:"#1a1a1a",color:"#e8e4df",fontFamily:"var(--font-dm-sans),sans-serif"};
 
   return(
     <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)} style={{background:"#161616",borderRadius:14,border:`1px solid ${exp||hover?"#2a2a2a":"#1e1e1e"}`,overflow:"hidden",transition:"border-color .15s, transform .15s",transform:hover&&!exp?"translateY(-1px)":"translateY(0)",opacity:isCancelled?0.65:1}}>
@@ -769,7 +783,7 @@ function ORow({o,exp,toggle,onVerify,onShip,onUndoShip,onCancel,onSaveNotes,busy
           <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
             <span style={{fontWeight:600,fontSize:14,color:"#e8e4df",textDecoration:isCancelled?"line-through":"none"}}>{o.customer?.name??"—"}</span>
             <span style={{fontSize:10,fontWeight:700,padding:"2px 8px",borderRadius:4,background:statusBg,color:statusColor,letterSpacing:.5,textTransform:"uppercase"}}>{statusLabel}</span>
-            {o.paymentProof&&!o.paymentVerified&&<span style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,background:"rgba(232,168,56,.1)",color:"#e8a838",letterSpacing:.5}}>BUKTI · BELUM VERIFIKASI</span>}
+            {o.hasProof&&!o.paymentVerified&&o.status!=="cancelled"&&<span style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,background:"rgba(232,168,56,.1)",color:"#e8a838",letterSpacing:.5}}>BUKTI · BELUM VERIFIKASI</span>}
             {o.paymentVerified&&<span style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,background:"rgba(127,170,128,.1)",color:"#7faa80",letterSpacing:.5}}>BAYAR ✓</span>}
             {o.internalNotes&&<span style={{fontSize:9,fontWeight:700,padding:"2px 7px",borderRadius:4,background:"rgba(168,168,232,.08)",color:"#8b8fa8",letterSpacing:.5}}>📝 CATATAN</span>}
           </div>
@@ -811,10 +825,10 @@ function ORow({o,exp,toggle,onVerify,onShip,onUndoShip,onCancel,onSaveNotes,busy
             </DS>
 
             {/* Bukti Pembayaran + Verifikasi */}
-            {o.paymentProof&&(
+            {o.hasProof&&(
               <DS t="Bukti Pembayaran">
                 <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-                  <button onClick={()=>onProof(o.paymentProof!)} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",borderRadius:8,fontSize:12.5,fontWeight:600,background:"rgba(127,170,128,.1)",color:"#7faa80",border:"1px solid rgba(127,170,128,.2)",cursor:"pointer"}}>{Ic.eye} Lihat Bukti</button>
+                  <button onClick={onProof} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 16px",borderRadius:8,fontSize:12.5,fontWeight:600,background:"rgba(127,170,128,.1)",color:"#7faa80",border:"1px solid rgba(127,170,128,.2)",cursor:"pointer"}}>{Ic.eye} Lihat Bukti</button>
                   {!o.paymentVerified&&!isCancelled&&(
                     <button onClick={onVerify} disabled={busy} style={{display:"flex",alignItems:"center",gap:6,padding:"10px 16px",borderRadius:8,fontSize:12.5,fontWeight:600,background:"#1f3a26",color:"#7faa80",border:"1px solid rgba(127,170,128,.3)",cursor:busy?"wait":"pointer",opacity:busy?.5:1}}>{Ic.check} Verifikasi Bayar</button>
                   )}
@@ -853,11 +867,11 @@ function ORow({o,exp,toggle,onVerify,onShip,onUndoShip,onCancel,onSaveNotes,busy
                 onChange={e=>{setNotes(e.target.value);setNotesDirty(e.target.value!==(o.internalNotes??""));}}
                 rows={2}
                 placeholder="Catatan untuk admin (mis: permintaan customer, alergi, hadiah, dll). Customer tidak lihat ini."
-                style={{...inpDark,resize:"vertical",fontFamily:"'DM Sans',sans-serif"}}
+                style={{...inpDark,resize:"vertical",fontFamily:"var(--font-dm-sans),sans-serif"}}
               />
               {notesDirty&&(
                 <button
-                  onClick={()=>{onSaveNotes(notes);setNotesDirty(false);}}
+                  onClick={async()=>{if(await onSaveNotes(notes))setNotesDirty(false);}}
                   disabled={busy}
                   style={{marginTop:6,padding:"7px 14px",borderRadius:6,border:"none",background:"#3d5a3e",color:"#e8e4df",fontSize:11,fontWeight:600,cursor:busy?"wait":"pointer",opacity:busy?.5:1}}
                 >Simpan catatan</button>
@@ -905,11 +919,11 @@ function ORow({o,exp,toggle,onVerify,onShip,onUndoShip,onCancel,onSaveNotes,busy
                   onChange={e=>setCancelReason(e.target.value)}
                   rows={2}
                   placeholder="Alasan pembatalan (mis: bukti bayar tidak match, stok habis, customer batal)"
-                  style={{...inpDark,resize:"vertical",fontFamily:"'DM Sans',sans-serif"}}
+                  style={{...inpDark,resize:"vertical",fontFamily:"var(--font-dm-sans),sans-serif"}}
                 />
                 <div style={{display:"flex",gap:8,marginTop:8}}>
                   <button
-                    onClick={e=>{e.stopPropagation();if(cancelReason.trim()){onCancel(cancelReason);setConfirmCancel(false);setCancelReason("");}}}
+                    onClick={async e=>{e.stopPropagation();if(cancelReason.trim()&&await onCancel(cancelReason)){setConfirmCancel(false);setCancelReason("");}}}
                     disabled={busy||!cancelReason.trim()}
                     style={{padding:"8px 16px",borderRadius:6,border:"none",background:cancelReason.trim()?"#7a2a20":"#262626",color:"#e8e4df",fontSize:12,fontWeight:600,cursor:cancelReason.trim()?"pointer":"not-allowed",opacity:busy?.5:1}}
                   >Konfirmasi cancel</button>
@@ -953,7 +967,7 @@ function RevenueChart({buckets}:{buckets:{date:Date;revenue:number;count:number}
   const labelStep=Math.max(1,Math.ceil(n/6));
   return(
     <div style={{width:"100%",overflow:"hidden"}}>
-      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{width:"100%",height:"auto",display:"block",fontFamily:"'DM Sans',sans-serif"}}>
+      <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{width:"100%",height:"auto",display:"block",fontFamily:"var(--font-dm-sans),sans-serif"}}>
         <defs>
           <linearGradient id="revGrad" x1="0" x2="0" y1="0" y2="1">
             <stop offset="0%" stopColor="#7faa80" stopOpacity=".4"/>
@@ -1021,8 +1035,8 @@ function StatusDonut({shipped,pending}:{shipped:number;pending:number}){
           <circle cx={cx} cy={cy} r={r} fill="none" stroke="#5a9a7a" strokeWidth={sw} strokeDasharray={`${C*sFrac} ${C}`} strokeLinecap="butt" transform={`rotate(-90 ${cx} ${cy})`} style={{transition:"stroke-dasharray .6s ease"}}/>
           <circle cx={cx} cy={cy} r={r} fill="none" stroke="#e8a838" strokeWidth={sw} strokeDasharray={`${C*pFrac} ${C}`} strokeDashoffset={-C*sFrac} strokeLinecap="butt" transform={`rotate(-90 ${cx} ${cy})`} style={{transition:"all .6s ease"}}/>
         </>)}
-        <text x={cx} y={cy-2} textAnchor="middle" fill="#e8e4df" fontSize="28" fontWeight="700" fontFamily="'DM Sans',sans-serif">{total}</text>
-        <text x={cx} y={cy+16} textAnchor="middle" fill="#555" fontSize="10" fontFamily="'DM Sans',sans-serif" letterSpacing="1">ORDERS</text>
+        <text x={cx} y={cy-2} textAnchor="middle" fill="#e8e4df" fontSize="28" fontWeight="700" fontFamily="var(--font-dm-sans),sans-serif">{total}</text>
+        <text x={cx} y={cy+16} textAnchor="middle" fill="#555" fontSize="10" fontFamily="var(--font-dm-sans),sans-serif" letterSpacing="1">ORDERS</text>
       </svg>
       <div style={{flex:1,minWidth:120,display:"flex",flexDirection:"column",gap:12}}>
         <div>
