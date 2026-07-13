@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Asuka Brewing & Space
 
-## Getting Started
+Storefront + admin dashboard untuk toko kopi Asuka Brewing (Pejaten, Jakarta Selatan). Dibangun dengan Next.js (App Router), Firestore, dan Tailwind CSS.
 
-First, run the development server:
+## Arsitektur
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+Browser **tidak pernah** berbicara langsung ke Firebase — semua akses Firestore berjalan server-side lewat Firebase Admin SDK, dan Firestore rules menolak seluruh akses client:
+
+| Route | Fungsi |
+|---|---|
+| `GET /api/products` | Katalog produk publik (rate-limited, CDN-cacheable) |
+| `POST /api/order` | Checkout — harga dihitung ulang dari katalog di server, stok dipotong atomik |
+| `GET /api/track/[id]` | Lacak pesanan (hanya field non-sensitif) |
+| `POST /api/admin/auth` | Login admin → token HMAC (rate limit lintas-instance via Firestore) |
+| `POST /api/admin/verify` | Validasi token sesi admin |
+| `GET/PATCH /api/admin/orders` | List order & aksi status (verify/ship/undo/cancel — divalidasi transisinya dalam transaksi; cancel mengembalikan stok) |
+| `GET/POST/PATCH/DELETE /api/admin/products` | Kelola produk |
+
+Notifikasi pesanan baru dikirim ke Telegram dari server (`src/lib/telegram.ts`).
+
+## Struktur
+
+```
+src/
+  app/            # App Router: halaman + API routes
+    admin/        # Dashboard admin (font self-host, noindex)
+    api/          # Semua endpoint (lihat tabel di atas)
+  components/     # AsukaBrewing (storefront), AdminDashboard, komponen asuka/*
+  lib/            # Logika murni + util (auth, orderActions, orderPricing,
+                  #   rateLimit, sharedRateLimit, dll — masing-masing ada testnya)
+firestore.rules   # Deny-all (deploy manual: firebase deploy --only firestore:rules)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Menjalankan
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```bash
+cp .env.local.example .env.local   # isi kredensial (lihat komentar di file)
+npm install
+npm run dev
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Wajib diisi: `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_TOKEN_SECRET`, `FIREBASE_SERVICE_ACCOUNT`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_IDS`. Tanpa service account, route yang menyentuh Firestore mengembalikan 503.
 
-## Learn More
+## Test & build
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm test        # vitest (unit test lib)
+npm run lint
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Deploy
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Di-deploy ke Vercel: set semua env var di project settings, lalu push ke `main`. Perubahan `firestore.rules` di-deploy terpisah dan manual.

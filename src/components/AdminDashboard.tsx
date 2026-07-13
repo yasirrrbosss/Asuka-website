@@ -183,7 +183,7 @@ export default function AdminDashboard() {
         const token = window.sessionStorage?.getItem("asuka_admin_token");
         if (!token) return;
         // Verify the stored token is still valid before trusting the session.
-        const r = await fetch("/api/admin-verify", {
+        const r = await fetch("/api/admin/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ token }),
@@ -203,7 +203,7 @@ export default function AdminDashboard() {
     })();
   }, []);
 
-  const handleLogin=async()=>{setLoginErr("");setLoginLoading(true);try{const r=await fetch("/api/admin-auth",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,password})});const d=await r.json();if(r.ok&&d.success){setLoggedIn(true);setPassword("");try{window.sessionStorage?.setItem("asuka_admin_token",d.token);}catch{}setLoading(true);Promise.all([fetchOrders(),fetchProds()]).finally(()=>setLoading(false));}else{setLoginErr(d.error||"Login gagal.");}}catch{setLoginErr("Tidak bisa connect.");}finally{setLoginLoading(false);}};
+  const handleLogin=async()=>{setLoginErr("");setLoginLoading(true);try{const r=await fetch("/api/admin/auth",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,password})});const d=await r.json();if(r.ok&&d.success){setLoggedIn(true);setPassword("");try{window.sessionStorage?.setItem("asuka_admin_token",d.token);}catch{}setLoading(true);Promise.all([fetchOrders(),fetchProds()]).finally(()=>setLoading(false));}else{setLoginErr(d.error||"Login gagal.");}}catch{setLoginErr("Tidak bisa connect.");}finally{setLoginLoading(false);}};
   const handleLogout=()=>{setLoggedIn(false);setUsername("");setPassword("");setOrders([]);setProds([]);try{window.sessionStorage?.removeItem("asuka_admin_token");}catch{}};
 
   // Guard against CSV/formula injection: a field starting with = + - @ (or a

@@ -36,7 +36,7 @@ export async function POST(req: NextRequest) {
       try {
         limit = await checkSharedRateLimit(db, "admin-auth", ip, LIMIT);
       } catch (err) {
-        console.error("/api/admin-auth: shared rate limit unavailable:", err);
+        console.error("/api/admin/auth: shared rate limit unavailable:", err);
       }
     }
   }
