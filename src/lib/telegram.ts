@@ -73,9 +73,14 @@ async function sendToChat(chatId: string, text: string): Promise<boolean> {
       signal: controller.signal,
     });
     clearTimeout(timeout);
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      console.error(`telegram: sendMessage to ${chatId} failed (${res.status}): ${detail}`);
+    }
     return res.ok;
-  } catch {
+  } catch (err) {
     clearTimeout(timeout);
+    console.error(`telegram: sendMessage to ${chatId} threw:`, err);
     return false;
   }
 }
