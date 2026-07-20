@@ -24,14 +24,11 @@ export default function AsukaBrewing() {
   const [notif, setNotif] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [oid, setOid] = useState<string | null>(null);
-  const [heroOk, setHeroOk] = useState(false);
   const [agreed, setAgreed] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsError, setProductsError] = useState<string | null>(null);
   const [scrolled, setScrolled] = useState(false);
-
-  useEffect(() => { setTimeout(() => setHeroOk(true), 100); }, []);
 
   // Nav-state: transparent over hero on home page, solid otherwise
   useEffect(() => {
@@ -158,7 +155,9 @@ export default function AsukaBrewing() {
         WebkitBackdropFilter: navOnDark ? "none" : "blur(18px)",
         color: navOnDark ? "var(--cream)" : "var(--ink)",
         boxShadow: navOnDark ? "none" : "0 1px 0 var(--paper-edge)",
-        transition: "all 0.4s",
+        // Color switches instantly: transitioning it leaves dark text floating
+        // over the dark hero for a beat before the cream background catches up.
+        transition: "background 0.4s, box-shadow 0.4s, padding 0.4s",
       }}>
         <button
           type="button"
@@ -221,7 +220,7 @@ export default function AsukaBrewing() {
 
       {/* PAGES */}
       <main style={{ opacity: fade ? 1 : 0, transition: "opacity 0.22s ease" }}>
-        {page === "home" && <HomePage heroOk={heroOk} filter={filter} setFilter={setFilter} addToCart={addToCart} products={products} productsLoading={productsLoading} productsError={productsError} />}
+        {page === "home" && <HomePage filter={filter} setFilter={setFilter} addToCart={addToCart} products={products} productsLoading={productsLoading} productsError={productsError} />}
         {page === "cart" && <CartPage cart={cart} updateQty={updateQty} removeFromCart={removeFromCart} cartSubtotal={cartSubtotal} go={go} />}
         {page === "checkout" && <CheckoutPage cart={cart} cartSubtotal={cartSubtotal} shipment={shipment} setShipment={setShipment} form={form} setForm={setForm} grandTotal={grandTotal} go={go} />}
         {page === "payment" && <PaymentPage grandTotal={grandTotal} proof={proof} proofName={proofName} handleProof={handleProof} setProof={setProof} setProofName={setProofName} agreed={agreed} setAgreed={setAgreed} placeOrder={placeOrder} busy={busy} go={go} cart={cart} shipment={shipment} form={form} />}

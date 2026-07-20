@@ -7,7 +7,6 @@ import { ProductCard } from "./ProductCard";
 import { ProductCardSkeleton } from "./Skeleton";
 
 interface HomeProps {
-  heroOk: boolean;
   filter: string;
   setFilter: (f: string) => void;
   addToCart: (p: Product, q: number) => void;
@@ -16,9 +15,17 @@ interface HomeProps {
   productsError: string | null;
 }
 
-export function HomePage({ heroOk, filter, setFilter, addToCart, products, productsLoading, productsError }: HomeProps) {
+export function HomePage({ filter, setFilter, addToCart, products, productsLoading, productsError }: HomeProps) {
   const [retried, setRetried] = useState(0);
   const filtered = products.filter((p) => filter === "all" || p.cat === filter);
+
+  // Reveal the hero when its main photo has painted; the timeout is a floor so
+  // a slow or failed image load can never leave the page blank.
+  const [heroReady, setHeroReady] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setHeroReady(true), 1200);
+    return () => clearTimeout(t);
+  }, []);
 
   // Reveal-on-scroll for sections
   const containerRef = useRef<HTMLDivElement>(null);
@@ -49,7 +56,7 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
         color: "var(--cream)",
         display: "grid",
         gridTemplateColumns: "1.2fr 1fr",
-        opacity: heroOk ? 1 : 0,
+        opacity: heroReady ? 1 : 0,
         transition: "opacity 0.8s ease",
       }} className="hero-grid">
         {/* MAIN side */}
@@ -61,6 +68,7 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
             priority
             sizes="(max-width: 880px) 100vw, 55vw"
             style={{ objectFit: "cover" }}
+            onLoad={() => setHeroReady(true)}
           />
           <div style={{
             position: "absolute", inset: 0,
@@ -135,26 +143,31 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
             background: "linear-gradient(180deg, rgba(14,9,5,0.7), rgba(8,5,3,0.95))",
           }} />
 
-          {/* Spinning stamp */}
+          {/* Stamp: ring text spins, center mark stays upright */}
           <div className="hero-stamp" style={{
             position: "absolute",
             top: "50%", left: "50%",
             width: "min(240px, 55vw)", height: "min(240px, 55vw)",
             borderRadius: "50%",
-            border: "1px solid rgba(232,184,112,0.42)",
             display: "flex", alignItems: "center", justifyContent: "center",
-            animation: "stampSpin 32s linear infinite",
             transform: "translate(-50%, -50%)",
             zIndex: 1,
           }}>
-            <svg viewBox="0 0 240 240" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>
-              <defs>
-                <path id="stampCircle" d="M 120, 120 m -100, 0 a 100,100 0 1,1 200,0 a 100,100 0 1,1 -200,0" fill="none" />
-              </defs>
-              <text fill="#e8b870" fontFamily="Inter" fontSize="11" letterSpacing="3" fontWeight="600">
-                <textPath href="#stampCircle">ASUKA · BREWING &amp; SPACE · EST 2025 </textPath>
-              </text>
-            </svg>
+            <div className="stamp-ring" style={{
+              position: "absolute", inset: 0,
+              borderRadius: "50%",
+              border: "1px solid rgba(232,184,112,0.42)",
+              animation: "stampSpin 32s linear infinite",
+            }}>
+              <svg viewBox="0 0 240 240" style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }}>
+                <defs>
+                  <path id="stampCircle" d="M 120, 120 m -100, 0 a 100,100 0 1,1 200,0 a 100,100 0 1,1 -200,0" fill="none" />
+                </defs>
+                <text fill="#e8b870" fontFamily="Inter" fontSize="11" letterSpacing="3" fontWeight="600">
+                  <textPath href="#stampCircle">ASUKA · BREWING &amp; SPACE · EST 2025 </textPath>
+                </text>
+              </svg>
+            </div>
             <img
               src="/images/logo-green.png"
               alt="Asuka Brewing & Space"
@@ -258,7 +271,7 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
           }}>
             {[{ k: "all", l: "All" }, { k: "filter", l: "Filter" }, { k: "espresso", l: "Espresso" }].map((f) => (
               <button key={f.k} onClick={() => setFilter(f.k)} style={{
-                padding: "4px 14px", borderRadius: 999, cursor: "pointer",
+                padding: "12px 18px", borderRadius: 999, cursor: "pointer",
                 border: "none", background: filter === f.k ? "var(--ink)" : "transparent",
                 color: filter === f.k ? "var(--bone)" : "var(--ink-soft)",
                 fontSize: 11, letterSpacing: "0.2em", textTransform: "uppercase",
@@ -427,13 +440,18 @@ export function HomePage({ heroOk, filter, setFilter, addToCart, products, produ
       </section>
 
       <style>{`
+        .hero-stamp:hover .stamp-ring { animation-play-state: paused; }
         @media (max-width: 880px) {
           .hero-grid { grid-template-columns: 1fr !important; height: auto !important; min-height: auto !important; }
           .hero-grid > div { height: 70vh; min-height: 520px; }
+          /* Second panel (beans + stamp) is decorative on mobile — keep it short
+             so the product collection surfaces within the first scroll. */
+          .hero-grid > div:last-child { height: 48vh; min-height: 380px; }
           .ritual-grid { grid-template-columns: 1fr !important; gap: 32px !important; }
         }
         @media (max-width: 560px) {
           .hero-grid > div { height: 64vh; min-height: 460px; }
+          .hero-grid > div:last-child { height: 44vh; min-height: 340px; }
         }
       `}</style>
     </div>
